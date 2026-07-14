@@ -36,21 +36,47 @@ async function main() {
 async function assertCopilotCliAccess() {
 	await runCommand('gh', ['--version'], 'GitHub CLI is required to run Copilot CLI.');
 	await runCommand('gh', ['auth', 'status'], 'GitHub authentication is required to check Copilot access.');
-	await runCommand(
-		'gh',
-		['copilot', 'suggest', 'echo Copilot access check', '--agent', 'shell'],
+	await runCopilotSuggest(
+		'echo Copilot access check',
 		'Copilot CLI access is required. No valid Copilot license or permission was found for this workflow context.',
 	);
 }
 
 async function generateWithCopilotCli(prompt) {
-	const { stdout } = await runCommand(
-		'gh',
-		['copilot', 'suggest', prompt, '--agent', 'shell'],
-		'Copilot CLI failed to generate a Playwright test.',
-	);
+	const { stdout } = await runCopilotSuggest(prompt, 'Copilot CLI failed to generate a Playwright test.');
 
 	return extractCodeBlock(stdout) || stdout;
+}
+
+async function runCopilotSuggest(prompt, failureMessage) {
+	let lastError;
+
+	for (const args of createCopilotSuggestArgs(prompt)) {
+		try {
+			return await runCommand('gh', args, failureMessage);
+		} catch (error) {
+			lastError = error;
+
+			if (!isCopilotCommandFormatError(error.message)) {
+				throw error;
+			}
+		}
+	}
+
+	throw lastError;
+}
+
+function createCopilotSuggestArgs(prompt) {
+	return [
+		['copilot', '--prompt', `suggest ${prompt} --agent shell`],
+		['copilot', '-p', `suggest ${prompt} --agent shell`],
+		['copilot', 'suggest', prompt, '--agent', 'shell'],
+		['copilot', 'suggest', prompt, '--target', 'shell'],
+	];
+}
+
+function isCopilotCommandFormatError(message) {
+	return /Invalid command format|unknown option|unknown command|Did you mean|--target|--agent/i.test(message);
 }
 
 async function runCommand(command, args, failureMessage) {
