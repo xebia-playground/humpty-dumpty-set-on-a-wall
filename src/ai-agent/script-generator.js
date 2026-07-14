@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 const targetUrl = requireEnv('TARGET_URL');
 const targetWorkspace = process.env.TARGET_WORKSPACE || process.cwd();
 const testingInstructionsPath = process.env.TESTING_INSTRUCTIONS_PATH || '.github/testing_instructions.md';
-const outputDir = path.resolve(process.cwd(), 'src/tests/generated-tests');
+const outputDir = path.resolve(process.env.GENERATED_TESTS_DIR || path.join(process.cwd(), 'src/tests/generated-tests'));
 const outputFile = path.join(outputDir, 'ai-generated.spec.js');
 
 try {
@@ -86,6 +86,7 @@ Requirements:
 - Do not use external services.
 - Keep tests resilient and based on visible user behavior.
 - Return only valid JavaScript test code.
+- Save no files and do not include markdown fences.
 
 Target URL: ${targetUrl}
 

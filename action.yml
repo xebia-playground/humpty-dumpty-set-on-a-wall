@@ -10,6 +10,9 @@ inputs:
     description: Path to custom testing instructions.
     required: false
     default: .github/testing_instructions.md
+  playwright-config:
+    description: Path to a custom Playwright config file in the caller repository.
+    required: false
   github-token:
     description: GitHub token used by GitHub CLI and Copilot CLI.
     required: false
@@ -36,6 +39,14 @@ runs:
     working-directory: ${{ github.action_path }}
     run: npx playwright install --with-deps chromium
 
+  - name: Resolve Playwright config
+    shell: bash
+    working-directory: ${{ github.action_path }}
+    run: node src/utils/playwright-config.js
+    env:
+      TARGET_WORKSPACE: ${{ github.workspace }}
+      PLAYWRIGHT_CONFIG: ${{ inputs.playwright-config }}
+
   - name: Install Copilot CLI
     shell: bash
     run: |
@@ -60,7 +71,7 @@ runs:
   - name: Run Playwright tests
     shell: bash
     working-directory: ${{ github.action_path }}
-    run: npm run test:ci
+    run: npx playwright test --project=chromium --config "$PLAYWRIGHT_CONFIG_PATH"
     env:
       TARGET_URL: ${{ inputs.target-url }}
 
@@ -73,8 +84,8 @@ runs:
       report_path="${GITHUB_WORKSPACE}/${REPORT_DIR}"
       rm -rf "$report_path"
       mkdir -p "$report_path"
-      if [ -d "playwright-report" ]; then
-        cp -R playwright-report/. "$report_path/"
+      if [ -d "$PLAYWRIGHT_HTML_REPORT_DIR" ]; then
+        cp -R "$PLAYWRIGHT_HTML_REPORT_DIR/." "$report_path/"
       fi
       echo "report-path=$report_path" >> "$GITHUB_OUTPUT"
     env:

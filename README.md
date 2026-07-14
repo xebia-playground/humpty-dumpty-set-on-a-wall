@@ -43,6 +43,7 @@ jobs:
         with:
           target-url: http://localhost:3000
           github-token: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          playwright-config: playwright.config.js
 
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
@@ -60,6 +61,24 @@ By default, the action looks for custom testing instructions at:
 ```
 
 If that file is empty or missing, the action generates default happy-path tests.
+
+## Custom Playwright Config
+
+The action uses its own Playwright config by default. A caller can provide a custom config file with `playwright-config`:
+
+```yaml
+with:
+  target-url: http://localhost:3000
+  playwright-config: playwright.config.js
+```
+
+When this input is provided, the action reads these paths from the caller config:
+
+- `testDir`: generated tests are written to `<testDir>/generated-tests`.
+- `outputDir`: Playwright test result files follow the caller config.
+- HTML reporter `outputFolder`: the final report is copied from that folder.
+
+If the caller config does not define those values, Playwright-style defaults are used.
 
 ## GitHub Pages
 
