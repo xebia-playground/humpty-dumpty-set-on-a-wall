@@ -54,7 +54,13 @@ runs:
         echo "GitHub CLI is required to run Copilot CLI."
         exit 1
       fi
-      gh extension install github/gh-copilot || gh extension upgrade github/gh-copilot
+
+      if gh copilot --help >/dev/null 2>&1; then
+        echo "Copilot CLI is already available."
+        exit 0
+      fi
+
+      gh extension install github/gh-copilot
     env:
       GH_TOKEN: ${{ inputs.github-token || github.token }}
 
