@@ -38,7 +38,7 @@ async function assertCopilotCliAccess() {
 	await runCommand('gh', ['auth', 'status'], 'GitHub authentication is required to check Copilot access.');
 	await runCommand(
 		'gh',
-		['copilot', 'suggest', 'echo Copilot access check', '--target', 'shell'],
+		['copilot', 'suggest', 'echo Copilot access check', '--agent', 'shell'],
 		'Copilot CLI access is required. No valid Copilot license or permission was found for this workflow context.',
 	);
 }
@@ -46,7 +46,7 @@ async function assertCopilotCliAccess() {
 async function generateWithCopilotCli(prompt) {
 	const { stdout } = await runCommand(
 		'gh',
-		['copilot', 'suggest', prompt, '--target', 'shell'],
+		['copilot', 'suggest', prompt, '--agent', 'shell'],
 		'Copilot CLI failed to generate a Playwright test.',
 	);
 
