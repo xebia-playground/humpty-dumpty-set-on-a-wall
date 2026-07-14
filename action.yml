@@ -1,0 +1,81 @@
+name: AI Testing Framework
+description: Generate and run Playwright tests for a target application.
+author: Arindam Das
+
+inputs:
+  target-url:
+    description: URL of the application to test.
+    required: true
+  testing-instructions-path:
+    description: Path to custom testing instructions.
+    required: false
+    default: .github/testing_instructions.md
+  github-token:
+    description: GitHub token used by GitHub CLI and Copilot CLI.
+    required: false
+  report-dir:
+    description: Directory in the caller workspace where the HTML report will be copied.
+    required: false
+    default: ai-testing-report
+
+outputs:
+  report-path:
+    description: Path to the generated HTML report directory.
+    value: ${{ steps.report.outputs.report-path }}
+
+runs:
+  using: composite
+  steps:
+  - name: Install dependencies
+    shell: bash
+    working-directory: ${{ github.action_path }}
+    run: npm ci
+
+  - name: Install Playwright browser
+    shell: bash
+    working-directory: ${{ github.action_path }}
+    run: npx playwright install --with-deps chromium
+
+  - name: Install Copilot CLI
+    shell: bash
+    run: |
+      if ! command -v gh >/dev/null 2>&1; then
+        echo "GitHub CLI is required to run Copilot CLI."
+        exit 1
+      fi
+      gh extension install github/gh-copilot || gh extension upgrade github/gh-copilot
+    env:
+      GH_TOKEN: ${{ inputs.github-token || github.token }}
+
+  - name: Generate tests
+    shell: bash
+    working-directory: ${{ github.action_path }}
+    run: npm run generate --if-present
+    env:
+      GH_TOKEN: ${{ inputs.github-token || github.token }}
+      TARGET_URL: ${{ inputs.target-url }}
+      TESTING_INSTRUCTIONS_PATH: ${{ inputs.testing-instructions-path }}
+      TARGET_WORKSPACE: ${{ github.workspace }}
+
+  - name: Run Playwright tests
+    shell: bash
+    working-directory: ${{ github.action_path }}
+    run: npm run test:ci
+    env:
+      TARGET_URL: ${{ inputs.target-url }}
+
+  - name: Export HTML report
+    id: report
+    if: ${{ always() }}
+    shell: bash
+    working-directory: ${{ github.action_path }}
+    run: |
+      report_path="${GITHUB_WORKSPACE}/${REPORT_DIR}"
+      rm -rf "$report_path"
+      mkdir -p "$report_path"
+      if [ -d "playwright-report" ]; then
+        cp -R playwright-report/. "$report_path/"
+      fi
+      echo "report-path=$report_path" >> "$GITHUB_OUTPUT"
+    env:
+      REPORT_DIR: ${{ inputs.report-dir }}

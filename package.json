@@ -1,1 +1,16 @@
-
+{
+  "name": "ai-testing-framework",
+  "version": "1.0.0",
+  "description": "AI-assisted Playwright testing framework for GitHub Actions.",
+  "type": "module",
+  "scripts": {
+    "generate": "node src/ai-agent/script-generator.js",
+    "test": "playwright test",
+    "test:ci": "playwright test --project=chromium",
+    "test:report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^26.1.1"
+  }
+}
