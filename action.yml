@@ -13,6 +13,9 @@ inputs:
   playwright-config:
     description: Path to a custom Playwright config file in the caller repository.
     required: false
+  generated-tests-dir:
+    description: Directory where generated tests will be written. For custom Playwright configs, set this inside that config's testDir.
+    required: false
   github-token:
     description: GitHub token used by GitHub CLI and Copilot CLI.
     required: false
@@ -20,6 +23,14 @@ inputs:
     description: Directory in the caller workspace where the HTML report will be copied.
     required: false
     default: ai-testing-report
+  playwright-container-image:
+    description: Docker image used to run Playwright tests in an isolated container.
+    required: false
+    default: mcr.microsoft.com/playwright:v1.61.1-noble
+  sandbox-network:
+    description: Docker network used by the Playwright sandbox container. Use an internal network shared with the app container to block public internet egress.
+    required: false
+    default: bridge
 
 outputs:
   report-path:
@@ -46,6 +57,7 @@ runs:
     env:
       TARGET_WORKSPACE: ${{ github.workspace }}
       PLAYWRIGHT_CONFIG: ${{ inputs.playwright-config }}
+      GENERATED_TESTS_DIR_INPUT: ${{ inputs.generated-tests-dir }}
 
   - name: Install Copilot CLI
     shell: bash
@@ -74,12 +86,98 @@ runs:
       TESTING_INSTRUCTIONS_PATH: ${{ inputs.testing-instructions-path }}
       TARGET_WORKSPACE: ${{ github.workspace }}
 
-  - name: Run Playwright tests
+  - name: Run Playwright tests in sandbox
     shell: bash
     working-directory: ${{ github.action_path }}
-    run: npx playwright test --project=chromium --config "$PLAYWRIGHT_CONFIG_PATH"
+    run: |
+      if ! command -v docker >/dev/null 2>&1; then
+        echo "Docker is required to run Playwright tests in the sandbox container."
+        exit 1
+      fi
+
+      if [ -z "$SANDBOX_NETWORK" ]; then
+        echo "sandbox-network cannot be empty."
+        exit 1
+      fi
+
+      sandbox_target_url="$TARGET_URL"
+      docker_network_args=(--network "$SANDBOX_NETWORK")
+      docker_host_args=()
+
+      if [ "$SANDBOX_NETWORK" = "bridge" ]; then
+        sandbox_target_url="${sandbox_target_url//localhost/host.docker.internal}"
+        sandbox_target_url="${sandbox_target_url//127.0.0.1/host.docker.internal}"
+        docker_host_args=(--add-host=host.docker.internal:host-gateway)
+      elif [ "$SANDBOX_NETWORK" != "host" ]; then
+        case "$sandbox_target_url" in
+          *localhost*|*127.0.0.1*)
+            echo "target-url cannot use localhost or 127.0.0.1 with a custom sandbox-network. Use the app container hostname, for example http://ecommerce-app:3000."
+            exit 1
+            ;;
+        esac
+      fi
+
+      sandbox_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/ai-testing-sandbox-$$"
+      sandbox_action_path="$sandbox_root/action"
+      sandbox_workspace_path="$sandbox_root/workspace"
+      sandbox_report_dir="$sandbox_root/playwright-report"
+      sandbox_output_dir="$sandbox_root/test-results"
+      trap 'rm -rf "$sandbox_root"' EXIT
+
+      mkdir -p "$sandbox_action_path" "$sandbox_workspace_path" "$sandbox_report_dir" "$sandbox_output_dir"
+      cp -a "$ACTION_PATH/." "$sandbox_action_path/"
+      cp -a "$GITHUB_WORKSPACE/." "$sandbox_workspace_path/"
+
+      map_to_sandbox() {
+        local source_path="$1"
+        case "$source_path" in
+          "$ACTION_PATH"|"$ACTION_PATH"/*)
+            printf '%s%s\n' "$sandbox_action_path" "${source_path#"$ACTION_PATH"}"
+            ;;
+          "$GITHUB_WORKSPACE"|"$GITHUB_WORKSPACE"/*)
+            printf '%s%s\n' "$sandbox_workspace_path" "${source_path#"$GITHUB_WORKSPACE"}"
+            ;;
+          *)
+            echo "Refusing to mount path outside the action or caller workspace: $source_path" >&2
+            exit 1
+            ;;
+        esac
+      }
+
+      sandbox_generated_test_file="$(map_to_sandbox "$GENERATED_TEST_FILE")"
+      sandbox_config_path="$(map_to_sandbox "$PLAYWRIGHT_CONFIG_PATH")"
+      sandbox_workdir="$(map_to_sandbox "$ACTION_PATH")"
+
+      set +e
+      docker run --rm \
+        "${docker_host_args[@]}" \
+        "${docker_network_args[@]}" \
+        --security-opt=no-new-privileges \
+        --workdir "$sandbox_workdir" \
+        --volume "$sandbox_root:$sandbox_root" \
+        --env CI="$CI" \
+        --env TARGET_URL="$sandbox_target_url" \
+        --env PLAYWRIGHT_HTML_OUTPUT_DIR="$sandbox_report_dir" \
+        "$PLAYWRIGHT_CONTAINER_IMAGE" \
+        npx playwright test "$sandbox_generated_test_file" --project=chromium --config "$sandbox_config_path" --reporter=line,html --output "$sandbox_output_dir"
+      test_status=$?
+      set -e
+
+      rm -rf "$PLAYWRIGHT_HTML_REPORT_DIR" "$PLAYWRIGHT_OUTPUT_DIR"
+      mkdir -p "$PLAYWRIGHT_HTML_REPORT_DIR" "$PLAYWRIGHT_OUTPUT_DIR"
+      if [ -d "$sandbox_report_dir" ]; then
+        cp -R "$sandbox_report_dir/." "$PLAYWRIGHT_HTML_REPORT_DIR/"
+      fi
+      if [ -d "$sandbox_output_dir" ]; then
+        cp -R "$sandbox_output_dir/." "$PLAYWRIGHT_OUTPUT_DIR/"
+      fi
+
+      exit "$test_status"
     env:
       TARGET_URL: ${{ inputs.target-url }}
+      ACTION_PATH: ${{ github.action_path }}
+      PLAYWRIGHT_CONTAINER_IMAGE: ${{ inputs.playwright-container-image }}
+      SANDBOX_NETWORK: ${{ inputs.sandbox-network }}
 
   - name: Export HTML report
     id: report
@@ -87,6 +185,13 @@ runs:
     shell: bash
     working-directory: ${{ github.action_path }}
     run: |
+      case "$REPORT_DIR" in
+        ""|/*|..|../*|*/..|*/../*)
+          echo "report-dir must be a relative path inside the caller workspace."
+          exit 1
+          ;;
+      esac
+
       report_path="${GITHUB_WORKSPACE}/${REPORT_DIR}"
       rm -rf "$report_path"
       mkdir -p "$report_path"

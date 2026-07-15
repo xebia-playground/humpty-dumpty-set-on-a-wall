@@ -13,6 +13,16 @@ const testingInstructionsPath = process.env.TESTING_INSTRUCTIONS_PATH || '.githu
 const outputDir = path.resolve(process.env.GENERATED_TESTS_DIR || path.join(process.cwd(), 'src/tests/generated-tests'));
 const outputFile = path.join(outputDir, 'ai-generated.spec.js');
 
+const ALLOWED_IMPORTS = new Set(['@playwright/test']);
+const FORBIDDEN_PATTERNS = [
+	[/\b(?:require|eval)\s*\(/, 'CommonJS require() and eval() are not allowed in generated tests.'],
+	[/\bFunction\s*\(/, 'Function constructor is not allowed in generated tests.'],
+	[/\bimport\s*\(/, 'Dynamic import() is not allowed in generated tests.'],
+	[/\b(?:fetch|XMLHttpRequest|WebSocket|EventSource)\s*\(/, 'Direct network calls are not allowed in generated tests.'],
+	[/\bprocess\s*\[/, 'Dynamic process access is not allowed in generated tests.'],
+	[/\bglobalThis\.process\b|\bglobal\.process\b/, 'Global process access is not allowed in generated tests.'],
+];
+
 try {
 	await main();
 } catch (error) {
@@ -132,11 +142,40 @@ function normalizeGeneratedTest(content) {
 		throw new Error('Copilot CLI did not return a valid Playwright test file.');
 	}
 
-	if (/\brequire\s*\(/.test(trimmedContent)) {
-		throw new Error('Copilot CLI returned CommonJS code. Generated tests must use ES module imports.');
-	}
+	validateGeneratedTestSecurity(trimmedContent);
 
 	return `${trimmedContent}\n`;
+}
+
+function validateGeneratedTestSecurity(content) {
+	for (const importSource of findModuleSources(content)) {
+		if (!ALLOWED_IMPORTS.has(importSource)) {
+			throw new Error(`Generated test imports disallowed module: ${importSource}`);
+		}
+	}
+
+	for (const [pattern, message] of FORBIDDEN_PATTERNS) {
+		if (pattern.test(content)) {
+			throw new Error(message);
+		}
+	}
+
+	const contentWithoutAllowedTargetUrl = content.replace(/process\.env\.TARGET_URL/g, '');
+	if (/\bprocess\s*(?:\.|\?\.)\s*env\b/.test(contentWithoutAllowedTargetUrl)) {
+		throw new Error('Generated tests may only read process.env.TARGET_URL.');
+	}
+}
+
+function findModuleSources(content) {
+	const sources = [];
+	const modulePattern = /^\s*(?:import\s*(?:[^'";]+?\s*from\s*)?|export\s+[^'";]+?\s*from\s*)['"]([^'"]+)['"]/gm;
+	let match;
+
+	while ((match = modulePattern.exec(content))) {
+		sources.push(match[1]);
+	}
+
+	return sources;
 }
 
 function convertCommonJsPlaywrightImport(content) {

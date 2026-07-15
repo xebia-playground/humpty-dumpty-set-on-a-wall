@@ -24,7 +24,7 @@ const RELEVANT_EXTENSIONS = new Set([
 
 export async function createProjectContext(workspacePath, instructionPath) {
 	const files = await collectRelevantFiles(workspacePath);
-	const instructions = await readOptionalFile(path.resolve(workspacePath, instructionPath));
+	const instructions = await readOptionalFile(resolveInputPathInside(workspacePath, instructionPath, 'testing instructions path'));
 
 	return {
 		workspacePath,
@@ -33,6 +33,20 @@ export async function createProjectContext(workspacePath, instructionPath) {
 		instructions: instructions.trim(),
 		files,
 	};
+}
+
+function resolveInputPathInside(rootPath, inputPath, label) {
+	if (path.isAbsolute(inputPath)) {
+		throw new Error(`${label} must be a relative path inside the caller workspace.`);
+	}
+
+	const targetPath = path.resolve(rootPath, inputPath);
+	const relativePath = path.relative(rootPath, targetPath);
+	if (relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))) {
+		return targetPath;
+	}
+
+	throw new Error(`${label} resolves outside the caller workspace.`);
 }
 
 async function collectRelevantFiles(workspacePath) {
