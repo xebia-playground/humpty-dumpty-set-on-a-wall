@@ -122,7 +122,24 @@ runs:
       sandbox_workspace_path="$sandbox_root/workspace"
       sandbox_report_dir="$sandbox_root/playwright-report"
       sandbox_output_dir="$sandbox_root/test-results"
-      trap 'rm -rf "$sandbox_root"' EXIT
+
+      restore_sandbox_permissions() {
+        if [ -d "$sandbox_root" ]; then
+          docker run --rm \
+            --network none \
+            --volume "$sandbox_root:$sandbox_root" \
+            --env SANDBOX_ROOT="$sandbox_root" \
+            "$PLAYWRIGHT_CONTAINER_IMAGE" \
+            sh -c 'chmod -R a+rwX "$SANDBOX_ROOT"' >/dev/null 2>&1 || true
+        fi
+      }
+
+      cleanup_sandbox() {
+        restore_sandbox_permissions
+        rm -rf "$sandbox_root" || true
+      }
+
+      trap cleanup_sandbox EXIT
 
       mkdir -p "$sandbox_action_path" "$sandbox_workspace_path" "$sandbox_report_dir" "$sandbox_output_dir"
       cp -a "$ACTION_PATH/." "$sandbox_action_path/"
@@ -161,6 +178,7 @@ runs:
         "$PLAYWRIGHT_CONTAINER_IMAGE" \
         npx playwright test "$sandbox_generated_test_file" --project=chromium --config "$sandbox_config_path" --reporter=line,html --output "$sandbox_output_dir"
       test_status=$?
+      restore_sandbox_permissions
       set -e
 
       rm -rf "$PLAYWRIGHT_HTML_REPORT_DIR" "$PLAYWRIGHT_OUTPUT_DIR"
