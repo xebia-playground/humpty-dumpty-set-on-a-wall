@@ -108,6 +108,8 @@ function buildPrompt(projectContext) {
 
 Requirements:
 - Use @playwright/test.
+- Use ES module syntax: import { test, expect } from '@playwright/test'.
+- Do not use require() or CommonJS syntax.
 - Use process.env.TARGET_URL as the base URL.
 - Do not use external services.
 - Keep tests resilient and based on visible user behavior.
@@ -124,13 +126,24 @@ ${fileContext}`;
 }
 
 function normalizeGeneratedTest(content) {
-	const trimmedContent = content.trim();
+	const trimmedContent = convertCommonJsPlaywrightImport(content.trim());
 
 	if (!trimmedContent.includes('@playwright/test')) {
 		throw new Error('Copilot CLI did not return a valid Playwright test file.');
 	}
 
+	if (/\brequire\s*\(/.test(trimmedContent)) {
+		throw new Error('Copilot CLI returned CommonJS code. Generated tests must use ES module imports.');
+	}
+
 	return `${trimmedContent}\n`;
+}
+
+function convertCommonJsPlaywrightImport(content) {
+	return content.replace(
+		/const\s+\{\s*test\s*,\s*expect\s*\}\s*=\s*require\(['"]@playwright\/test['"]\);?/,
+		"import { test, expect } from '@playwright/test';",
+	);
 }
 
 function extractCodeBlock(content) {
