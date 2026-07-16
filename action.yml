@@ -158,7 +158,6 @@ runs:
       sandbox_workspace_path="$sandbox_root/workspace"
       sandbox_report_dir="$sandbox_root/playwright-report"
       sandbox_output_dir="$sandbox_root/test-results"
-      sandbox_proxy_config_path="$sandbox_root/playwright-proxy.config.mjs"
       egress_proxy_container=""
 
       restore_sandbox_permissions() {
@@ -204,6 +203,7 @@ runs:
 
       sandbox_generated_test_file="$(map_to_sandbox "$GENERATED_TEST_FILE")"
       sandbox_config_path="$(map_to_sandbox "$PLAYWRIGHT_CONFIG_PATH")"
+      sandbox_proxy_config_path="$(dirname "$sandbox_config_path")/.ai-testing-playwright-proxy.config.mjs"
       sandbox_workdir="$(map_to_sandbox "$ACTION_PATH")"
       active_config_path="$sandbox_config_path"
       playwright_proxy_server=""
