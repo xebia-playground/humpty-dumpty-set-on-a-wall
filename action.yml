@@ -31,6 +31,13 @@ inputs:
     description: Docker network used by the Playwright sandbox container. Use an internal network shared with the app container to block public internet egress.
     required: false
     default: bridge
+  egress-mode:
+    description: External egress control mode. Use proxy to allow browser traffic only to domains listed in egress-allowlist-path.
+    required: false
+    default: none
+  egress-allowlist-path:
+    description: Relative path in the caller repository to a newline-delimited list of external domains or IPs allowed by proxy egress mode.
+    required: false
 
 outputs:
   report-path:
@@ -100,6 +107,35 @@ runs:
         exit 1
       fi
 
+      if [ "$EGRESS_MODE" != "none" ] && [ "$EGRESS_MODE" != "proxy" ]; then
+        echo "egress-mode must be either none or proxy."
+        exit 1
+      fi
+
+      if [ "$EGRESS_MODE" = "proxy" ]; then
+        if [ -z "$EGRESS_ALLOWLIST_PATH" ]; then
+          echo "egress-allowlist-path is required when egress-mode is proxy."
+          exit 1
+        fi
+
+        if [ "$SANDBOX_NETWORK" = "bridge" ] || [ "$SANDBOX_NETWORK" = "host" ]; then
+          echo "egress-mode proxy requires a custom internal sandbox-network so browser traffic cannot bypass the proxy."
+          exit 1
+        fi
+
+        case "$EGRESS_ALLOWLIST_PATH" in
+          /*|..|../*|*/..|*/../*)
+            echo "egress-allowlist-path must be a relative path inside the caller workspace."
+            exit 1
+            ;;
+        esac
+
+        if [ ! -f "$GITHUB_WORKSPACE/$EGRESS_ALLOWLIST_PATH" ]; then
+          echo "egress allowlist file was not found: $EGRESS_ALLOWLIST_PATH"
+          exit 1
+        fi
+      fi
+
       sandbox_target_url="$TARGET_URL"
       docker_network_args=(--network "$SANDBOX_NETWORK")
       docker_host_args=()
@@ -122,6 +158,8 @@ runs:
       sandbox_workspace_path="$sandbox_root/workspace"
       sandbox_report_dir="$sandbox_root/playwright-report"
       sandbox_output_dir="$sandbox_root/test-results"
+      sandbox_proxy_config_path="$sandbox_root/playwright-proxy.config.mjs"
+      egress_proxy_container=""
 
       restore_sandbox_permissions() {
         if [ -d "$sandbox_root" ]; then
@@ -135,6 +173,9 @@ runs:
       }
 
       cleanup_sandbox() {
+        if [ -n "$egress_proxy_container" ]; then
+          docker rm -f "$egress_proxy_container" >/dev/null 2>&1 || true
+        fi
         restore_sandbox_permissions
         rm -rf "$sandbox_root" || true
       }
@@ -164,6 +205,68 @@ runs:
       sandbox_generated_test_file="$(map_to_sandbox "$GENERATED_TEST_FILE")"
       sandbox_config_path="$(map_to_sandbox "$PLAYWRIGHT_CONFIG_PATH")"
       sandbox_workdir="$(map_to_sandbox "$ACTION_PATH")"
+      active_config_path="$sandbox_config_path"
+      playwright_proxy_server=""
+      playwright_proxy_bypass=""
+
+      if [ "$EGRESS_MODE" = "proxy" ]; then
+        sandbox_allowlist_path="$(map_to_sandbox "$GITHUB_WORKSPACE/$EGRESS_ALLOWLIST_PATH")"
+        proxy_name="ai-testing-egress-proxy-$$"
+
+        egress_proxy_container="$(docker run -d \
+          --name "$proxy_name" \
+          --network bridge \
+          --security-opt=no-new-privileges \
+          --volume "$sandbox_action_path:$sandbox_action_path:ro" \
+          --volume "$sandbox_allowlist_path:$sandbox_allowlist_path:ro" \
+          --env ALLOWLIST_PATH="$sandbox_allowlist_path" \
+          --env PROXY_PORT=8080 \
+          "$PLAYWRIGHT_CONTAINER_IMAGE" \
+          node "$sandbox_action_path/src/utils/allowlist-proxy.js")"
+        docker network connect --alias allowlist-proxy "$SANDBOX_NETWORK" "$egress_proxy_container"
+
+        proxy_ready="false"
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+          if docker logs "$egress_proxy_container" 2>&1 | grep -q 'Allowlist proxy listening'; then
+            proxy_ready="true"
+            break
+          fi
+          sleep 1
+        done
+
+        if [ "$proxy_ready" != "true" ]; then
+          echo "Allowlist proxy did not become ready."
+          docker logs "$egress_proxy_container" 2>&1 || true
+          exit 1
+        fi
+
+        target_hostname="$(node -e 'console.log(new URL(process.argv[1]).hostname)' "$sandbox_target_url")"
+        playwright_proxy_server="http://allowlist-proxy:8080"
+        playwright_proxy_bypass="localhost,127.0.0.1,$target_hostname"
+
+        {
+          printf '%s\n' "import { defineConfig } from '@playwright/test';"
+          printf '%s\n' "import { pathToFileURL } from 'node:url';"
+          printf '%s\n' ''
+          printf '%s\n' "const importedConfig = await import(pathToFileURL(process.env.PLAYWRIGHT_BASE_CONFIG_PATH).href);"
+          printf '%s\n' 'const baseConfig = importedConfig.default ?? importedConfig;'
+          printf '%s\n' ''
+          printf '%s\n' 'const proxyServer = process.env.PLAYWRIGHT_PROXY_SERVER;'
+          printf '%s\n' 'const proxyBypass = process.env.PLAYWRIGHT_PROXY_BYPASS;'
+          printf '%s\n' 'const proxy = proxyServer ? { server: proxyServer, ...(proxyBypass ? { bypass: proxyBypass } : {}) } : undefined;'
+          printf '%s\n' 'const withProxy = (use = {}) => proxy ? { ...use, proxy } : use;'
+          printf '%s\n' ''
+          printf '%s\n' 'export default defineConfig({'
+          printf '%s\n' '  ...baseConfig,'
+          printf '%s\n' '  use: withProxy(baseConfig.use),'
+          printf '%s\n' '  projects: baseConfig.projects?.map((project) => ({'
+          printf '%s\n' '    ...project,'
+          printf '%s\n' '    use: withProxy(project.use),'
+          printf '%s\n' '  })),'
+          printf '%s\n' '});'
+        } > "$sandbox_proxy_config_path"
+        active_config_path="$sandbox_proxy_config_path"
+      fi
 
       set +e
       docker run --rm \
@@ -175,8 +278,11 @@ runs:
         --env CI="$CI" \
         --env TARGET_URL="$sandbox_target_url" \
         --env PLAYWRIGHT_HTML_OUTPUT_DIR="$sandbox_report_dir" \
+        --env PLAYWRIGHT_BASE_CONFIG_PATH="$sandbox_config_path" \
+        --env PLAYWRIGHT_PROXY_SERVER="$playwright_proxy_server" \
+        --env PLAYWRIGHT_PROXY_BYPASS="$playwright_proxy_bypass" \
         "$PLAYWRIGHT_CONTAINER_IMAGE" \
-        npx playwright test "$sandbox_generated_test_file" --project=chromium --config "$sandbox_config_path" --reporter=line,html --output "$sandbox_output_dir"
+        npx playwright test "$sandbox_generated_test_file" --project=chromium --config "$active_config_path" --reporter=line,html --output "$sandbox_output_dir"
       test_status=$?
       restore_sandbox_permissions
       set -e
@@ -196,6 +302,8 @@ runs:
       ACTION_PATH: ${{ github.action_path }}
       PLAYWRIGHT_CONTAINER_IMAGE: ${{ inputs.playwright-container-image }}
       SANDBOX_NETWORK: ${{ inputs.sandbox-network }}
+      EGRESS_MODE: ${{ inputs.egress-mode }}
+      EGRESS_ALLOWLIST_PATH: ${{ inputs.egress-allowlist-path }}
 
   - name: Export HTML report
     id: report
