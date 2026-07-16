@@ -245,7 +245,6 @@ runs:
         playwright_proxy_bypass="localhost,127.0.0.1,$target_hostname"
 
         {
-          printf '%s\n' "import { defineConfig } from '@playwright/test';"
           printf '%s\n' "import { pathToFileURL } from 'node:url';"
           printf '%s\n' ''
           printf '%s\n' "const importedConfig = await import(pathToFileURL(process.env.PLAYWRIGHT_BASE_CONFIG_PATH).href);"
@@ -256,14 +255,14 @@ runs:
           printf '%s\n' 'const proxy = proxyServer ? { server: proxyServer, ...(proxyBypass ? { bypass: proxyBypass } : {}) } : undefined;'
           printf '%s\n' 'const withProxy = (use = {}) => proxy ? { ...use, proxy } : use;'
           printf '%s\n' ''
-          printf '%s\n' 'export default defineConfig({'
+          printf '%s\n' 'export default {'
           printf '%s\n' '  ...baseConfig,'
           printf '%s\n' '  use: withProxy(baseConfig.use),'
           printf '%s\n' '  projects: baseConfig.projects?.map((project) => ({'
           printf '%s\n' '    ...project,'
           printf '%s\n' '    use: withProxy(project.use),'
           printf '%s\n' '  })),'
-          printf '%s\n' '});'
+          printf '%s\n' '};'
         } > "$sandbox_proxy_config_path"
         active_config_path="$sandbox_proxy_config_path"
       fi
