@@ -14,8 +14,8 @@ export default defineConfig({
   use: {
     baseURL: process.env.TARGET_URL || 'http://localhost:3000',
     headless: true,
-    screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    screenshot: 'on',
+    video: 'on',
     trace: 'on-first-retry',
   },
   projects: [
