@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import { createProjectContext } from './planner.js';
@@ -22,12 +23,19 @@ const FORBIDDEN_PATTERNS = [
 	[/\bprocess\s*\[/, 'Dynamic process access is not allowed in generated tests.'],
 	[/\bglobalThis\.process\b|\bglobal\.process\b/, 'Global process access is not allowed in generated tests.'],
 ];
+const NON_JAVASCRIPT_OUTPUT_PATTERNS = [
+	[/^\s*(?:\u25cf|\u2502|\u2514)/u, 'Copilot CLI returned shell suggestion UI output instead of JavaScript.'],
+	[/\bnoop\s*\(shell\)/i, 'Copilot CLI returned a shell noop suggestion instead of JavaScript.'],
+	[/^\s*echo\s+done\s*$/im, 'Copilot CLI returned a shell command instead of JavaScript.'],
+];
 
-try {
-	await main();
-} catch (error) {
-	console.error(`Error: ${error.message}`);
-	process.exit(1);
+if (isMainModule()) {
+	try {
+		await main();
+	} catch (error) {
+		console.error(`Error: ${error.message}`);
+		process.exit(1);
+	}
 }
 
 async function main() {
@@ -36,9 +44,11 @@ async function main() {
 	const projectContext = await createProjectContext(targetWorkspace, testingInstructionsPath);
 	const prompt = buildPrompt(projectContext);
 	const generatedTest = await generateWithCopilotCli(prompt);
+	const normalizedGeneratedTest = normalizeGeneratedTest(generatedTest);
 
 	await fs.mkdir(outputDir, { recursive: true });
-	await fs.writeFile(outputFile, normalizeGeneratedTest(generatedTest), 'utf8');
+	await validateGeneratedTestSyntax(normalizedGeneratedTest);
+	await fs.writeFile(outputFile, normalizedGeneratedTest, 'utf8');
 
 	console.log(`Generated Playwright test: ${path.relative(process.cwd(), outputFile)}`);
 }
@@ -119,9 +129,12 @@ function buildPrompt(projectContext) {
 Requirements:
 - Use @playwright/test.
 - Use ES module syntax: import { test, expect } from '@playwright/test'.
+- The first non-comment code line must be: import { test, expect } from '@playwright/test'.
+- Include at least one Playwright test(...) block.
 - Do not use require() or CommonJS syntax.
 - Use process.env.TARGET_URL as the base URL.
 - Do not use external services.
+- Do not return shell commands, terminal instructions, or Copilot suggestion UI output.
 - Keep tests resilient and based on visible user behavior.
 - Return only valid JavaScript test code.
 - Save no files and do not include markdown fences.
@@ -135,16 +148,58 @@ Application context:
 ${fileContext}`;
 }
 
-function normalizeGeneratedTest(content) {
+export function normalizeGeneratedTest(content) {
 	const trimmedContent = convertCommonJsPlaywrightImport(content.trim());
 
-	if (!trimmedContent.includes('@playwright/test')) {
-		throw new Error('Copilot CLI did not return a valid Playwright test file.');
+	rejectNonJavaScriptOutput(trimmedContent);
+
+	if (!hasPlaywrightTestImport(trimmedContent)) {
+		throw new Error('Copilot CLI did not return a valid Playwright test file. Expected an ES module import from @playwright/test.');
+	}
+
+	if (!hasPlaywrightTestBlock(trimmedContent)) {
+		throw new Error('Copilot CLI did not return a valid Playwright test file. Expected at least one test(...) block.');
 	}
 
 	validateGeneratedTestSecurity(trimmedContent);
 
 	return `${trimmedContent}\n`;
+}
+
+export async function validateGeneratedTestSyntax(content) {
+	const syntaxCheckFile = path.join(outputDir, `.ai-generated-syntax-check-${process.pid}.mjs`);
+
+	try {
+		await fs.writeFile(syntaxCheckFile, content, 'utf8');
+		await runCommand('node', ['--check', syntaxCheckFile], 'Generated Playwright test is not valid JavaScript.');
+	} finally {
+		await fs.rm(syntaxCheckFile, { force: true });
+	}
+}
+
+function rejectNonJavaScriptOutput(content) {
+	const firstCodeLine = content
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.find((line) => line && !line.startsWith('//'));
+
+	for (const [pattern, message] of NON_JAVASCRIPT_OUTPUT_PATTERNS) {
+		if (pattern.test(content) || (firstCodeLine && pattern.test(firstCodeLine))) {
+			throw new Error(`${message} Expected raw JavaScript Playwright test code.`);
+		}
+	}
+
+	if (firstCodeLine && !firstCodeLine.startsWith('import ')) {
+		throw new Error('Copilot CLI did not return raw JavaScript. The first non-comment code line must be an ES module import.');
+	}
+}
+
+function hasPlaywrightTestImport(content) {
+	return /^\s*import\s*\{(?=[^}]*\btest\b)(?=[^}]*\bexpect\b)[^}]+\}\s*from\s*['"]@playwright\/test['"];?/m.test(content);
+}
+
+function hasPlaywrightTestBlock(content) {
+	return /\btest(?:\.(?:only|skip|fixme))?\s*\(/.test(content);
 }
 
 function validateGeneratedTestSecurity(content) {
@@ -196,5 +251,9 @@ function requireEnv(name) {
 		throw new Error(`${name} is required.`);
 	}
 	return value;
+}
+
+function isMainModule() {
+	return process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 }
 
