@@ -4,11 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
-const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'script-generator-test-'));
-process.env.TARGET_URL = 'http://example.test';
-process.env.GENERATED_TESTS_DIR = temporaryDirectory;
+import { normalizeGeneratedTest, validateGeneratedTestSyntax } from './test-validator.js';
 
-const { normalizeGeneratedTest, validateGeneratedTestSyntax } = await import('./script-generator.js');
+const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'test-validator-'));
 
 test.after(async () => {
 	await fs.rm(temporaryDirectory, { recursive: true, force: true });
@@ -33,6 +31,19 @@ test('requires a Playwright test import and test block', () => {
 	);
 });
 
+test('rejects fixed waits', () => {
+	assert.throws(
+		() => normalizeGeneratedTest(`import { test, expect } from '@playwright/test';
+
+test('slow path', async ({ page }) => {
+	await page.goto(process.env.TARGET_URL);
+	await page.waitForTimeout(5000);
+	await expect(page).toHaveTitle(/shop/i);
+});`),
+		/Fixed waits are not allowed/,
+	);
+});
+
 test('accepts and syntax-checks valid generated Playwright code', async () => {
 	const normalizedTest = normalizeGeneratedTest(`import { test, expect } from '@playwright/test';
 
@@ -42,5 +53,8 @@ test('loads page', async ({ page }) => {
 });`);
 
 	assert.match(normalizedTest, /import \{ test, expect \} from '@playwright\/test';/);
-	await validateGeneratedTestSyntax(normalizedTest);
+	await validateGeneratedTestSyntax(normalizedTest, {
+		tempDir: temporaryDirectory,
+		targetUrl: 'http://example.test',
+	});
 });

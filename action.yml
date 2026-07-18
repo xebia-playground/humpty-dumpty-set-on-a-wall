@@ -83,6 +83,61 @@ runs:
     env:
       GH_TOKEN: ${{ inputs.github-token || github.token }}
 
+  - name: Inspect application snapshot
+    shell: bash
+    working-directory: ${{ github.action_path }}
+    run: |
+      if ! command -v docker >/dev/null 2>&1; then
+        echo "Docker is required to inspect the target application in the Playwright sandbox."
+        exit 1
+      fi
+
+      if [ -z "$SANDBOX_NETWORK" ]; then
+        echo "sandbox-network cannot be empty."
+        exit 1
+      fi
+
+      sandbox_target_url="$TARGET_URL"
+      docker_network_args=(--network "$SANDBOX_NETWORK")
+      docker_host_args=()
+
+      if [ "$SANDBOX_NETWORK" = "bridge" ]; then
+        sandbox_target_url="${sandbox_target_url//localhost/host.docker.internal}"
+        sandbox_target_url="${sandbox_target_url//127.0.0.1/host.docker.internal}"
+        docker_host_args=(--add-host=host.docker.internal:host-gateway)
+      elif [ "$SANDBOX_NETWORK" != "host" ]; then
+        case "$sandbox_target_url" in
+          *localhost*|*127.0.0.1*)
+            echo "target-url cannot use localhost or 127.0.0.1 with a custom sandbox-network. Use the app container hostname, for example http://ecommerce-app:3000."
+            exit 1
+            ;;
+        esac
+      fi
+
+      app_snapshot_file="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/ai-testing-app-snapshot.json"
+      docker run --rm \
+        "${docker_host_args[@]}" \
+        "${docker_network_args[@]}" \
+        --security-opt=no-new-privileges \
+        --workdir "$ACTION_PATH" \
+        --volume "$ACTION_PATH:$ACTION_PATH" \
+        --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE:ro" \
+        --volume "${RUNNER_TEMP:-${TMPDIR:-/tmp}}:${RUNNER_TEMP:-${TMPDIR:-/tmp}}" \
+        --env TARGET_URL="$sandbox_target_url" \
+        --env TESTING_INSTRUCTIONS_PATH="$TESTING_INSTRUCTIONS_PATH" \
+        --env TARGET_WORKSPACE="$GITHUB_WORKSPACE" \
+        --env APP_SNAPSHOT_FILE="$app_snapshot_file" \
+        "$PLAYWRIGHT_CONTAINER_IMAGE" \
+        node "$ACTION_PATH/src/agent/index.js" inspect
+
+      echo "APP_SNAPSHOT_FILE=$app_snapshot_file" >> "$GITHUB_ENV"
+    env:
+      TARGET_URL: ${{ inputs.target-url }}
+      ACTION_PATH: ${{ github.action_path }}
+      TESTING_INSTRUCTIONS_PATH: ${{ inputs.testing-instructions-path }}
+      PLAYWRIGHT_CONTAINER_IMAGE: ${{ inputs.playwright-container-image }}
+      SANDBOX_NETWORK: ${{ inputs.sandbox-network }}
+
   - name: Generate tests
     shell: bash
     working-directory: ${{ github.action_path }}
@@ -276,12 +331,15 @@ runs:
         --volume "$sandbox_root:$sandbox_root" \
         --env CI="$CI" \
         --env TARGET_URL="$sandbox_target_url" \
+        --env GENERATED_TEST_FILE="$sandbox_generated_test_file" \
+        --env PLAYWRIGHT_CONFIG_PATH="$active_config_path" \
+        --env PLAYWRIGHT_OUTPUT_DIR="$sandbox_output_dir" \
         --env PLAYWRIGHT_HTML_OUTPUT_DIR="$sandbox_report_dir" \
         --env PLAYWRIGHT_BASE_CONFIG_PATH="$sandbox_config_path" \
         --env PLAYWRIGHT_PROXY_SERVER="$playwright_proxy_server" \
         --env PLAYWRIGHT_PROXY_BYPASS="$playwright_proxy_bypass" \
         "$PLAYWRIGHT_CONTAINER_IMAGE" \
-        npx playwright test "$sandbox_generated_test_file" --project=chromium --config "$active_config_path" --reporter=line,html --output "$sandbox_output_dir"
+        node "$sandbox_action_path/src/agent/index.js" run-tests
       test_status=$?
       restore_sandbox_permissions
       set -e
@@ -309,20 +367,6 @@ runs:
     if: ${{ always() }}
     shell: bash
     working-directory: ${{ github.action_path }}
-    run: |
-      case "$REPORT_DIR" in
-        ""|/*|..|../*|*/..|*/../*)
-          echo "report-dir must be a relative path inside the caller workspace."
-          exit 1
-          ;;
-      esac
-
-      report_path="${GITHUB_WORKSPACE}/${REPORT_DIR}"
-      rm -rf "$report_path"
-      mkdir -p "$report_path"
-      if [ -d "$PLAYWRIGHT_HTML_REPORT_DIR" ]; then
-        cp -R "$PLAYWRIGHT_HTML_REPORT_DIR/." "$report_path/"
-      fi
-      echo "report-path=$report_path" >> "$GITHUB_OUTPUT"
+    run: node src/reports/report-exporter.js
     env:
       REPORT_DIR: ${{ inputs.report-dir }}

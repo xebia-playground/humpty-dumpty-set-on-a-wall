@@ -4,9 +4,12 @@
   "description": "AI-assisted Playwright testing framework for GitHub Actions.",
   "type": "module",
   "scripts": {
-    "generate": "node src/ai-agent/script-generator.js",
+    "inspect": "node src/agent/index.js inspect",
+    "generate": "node src/agent/index.js generate",
+    "run:generated": "node src/agent/index.js run-tests",
     "test": "playwright test",
     "test:ci": "playwright test --project=chromium",
+    "test:validator": "node --test src/validation/test-validator.test.js",
     "test:report": "playwright show-report"
   },
   "devDependencies": {

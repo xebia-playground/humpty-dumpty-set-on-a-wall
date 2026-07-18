@@ -17,10 +17,10 @@ jobs:
       run: npm ci
     - name: Install Playwright Browsers
       run: npx playwright install --with-deps chromium
-    - name: Generate tests
-      run: npm run generate --if-present
-    - name: Run Playwright tests
-      run: npm run test:ci
+    - name: Run framework tests
+      run: |
+        npm run test:validator
+        node --test src/utils/allowlist-proxy.test.js
     - uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}
       with:
