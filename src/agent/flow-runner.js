@@ -1,19 +1,23 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import { formatAppSnapshot } from '../context/app-snapshot.js';
 import { loadTestingInstructions } from '../context/instruction-loader.js';
 import { generatePlaywrightSpecWithCopilot } from '../skills/copilot-cli-skill.js';
 import { inspectApplication, runGeneratedPlaywrightTest } from '../skills/playwright-cli-skill.js';
-import { normalizeGeneratedTest, validateGeneratedTestSyntax } from '../validation/test-validator.js';
+import { extractPlaywrightTestNames, extractRequiredTestNames, findMissingRequiredTestNames, normalizeGeneratedTest, validateGeneratedTestSyntax } from '../validation/test-validator.js';
 
 export async function inspectLiveApp(env = process.env) {
 	const targetUrl = requireEnv(env, 'TARGET_URL');
 	const snapshotFile = requireEnv(env, 'APP_SNAPSHOT_FILE');
-	await loadTestingInstructions({
+	const instructions = await loadTestingInstructions({
 		instructionPath: env.TESTING_INSTRUCTIONS_PATH || '.github/testing_instructions.md',
 		workspacePath: env.TARGET_WORKSPACE || process.cwd(),
 	});
+	logInstructionDebug(instructions);
+
 	const appSnapshot = await inspectApplication({ targetUrl });
+	logGroup('Application snapshot captured by Playwright', formatAppSnapshot(appSnapshot));
 
 	await fs.mkdir(path.dirname(snapshotFile), { recursive: true });
 	await fs.writeFile(snapshotFile, `${JSON.stringify(appSnapshot, null, 2)}\n`, 'utf8');
@@ -31,12 +35,16 @@ export async function generateTestsFromSnapshot(env = process.env) {
 		instructionPath: testingInstructionsPath,
 		workspacePath,
 	});
+	logInstructionDebug(instructions);
+	logGroup('Application snapshot used for Copilot generation', formatAppSnapshot(appSnapshot));
+
 	const generatedSpec = await generatePlaywrightSpecWithCopilot({
 		appSnapshot,
 		instructions,
 		targetUrl,
 	});
 	const normalizedSpec = normalizeGeneratedTest(generatedSpec);
+	logGeneratedTestDebug(normalizedSpec, instructions);
 
 	await fs.mkdir(path.dirname(outputFile), { recursive: true });
 	await validateGeneratedTestSyntax(normalizedSpec, {
@@ -64,4 +72,40 @@ function requireEnv(env, name) {
 		throw new Error(`${name} is required.`);
 	}
 	return value;
+}
+
+function logInstructionDebug(instructions) {
+	const requiredTestNames = extractRequiredTestNames(instructions.text || '');
+	console.log(`Testing instructions path: ${instructions.path}`);
+	console.log(`Testing instructions loaded: ${instructions.hasCustomInstructions ? 'yes' : 'no'}`);
+	console.log(`Testing instructions length: ${(instructions.text || '').length} characters`);
+	console.log(`Required test names detected: ${requiredTestNames.length}`);
+	for (const testName of requiredTestNames) {
+		console.log(`- ${testName}`);
+	}
+}
+
+function logGeneratedTestDebug(content, instructions) {
+	const generatedTestNames = extractPlaywrightTestNames(content);
+	const missingTestNames = findMissingRequiredTestNames(content, instructions);
+
+	console.log(`Generated Playwright test cases: ${generatedTestNames.length}`);
+	for (const testName of generatedTestNames) {
+		console.log(`- ${testName}`);
+	}
+
+	if (missingTestNames.length === 0) {
+		console.log('Generated tests include all required test names detected from instructions.');
+		return;
+	}
+
+	for (const testName of missingTestNames) {
+		console.warn(`::warning::Generated tests are missing required test case: ${testName}`);
+	}
+}
+
+function logGroup(title, content) {
+	console.log(`::group::${title}`);
+	console.log(content);
+	console.log('::endgroup::');
 }

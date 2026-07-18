@@ -50,6 +50,37 @@ export async function validateGeneratedTestSyntax(content, { tempDir = process.c
 	}
 }
 
+export function extractRequiredTestNames(instructionText = '') {
+	const testNames = [];
+	const requiredTestPattern = /^\s*\d+\.\s*`([^`]+)`/gm;
+	let match;
+
+	while ((match = requiredTestPattern.exec(instructionText))) {
+		testNames.push(match[1].trim());
+	}
+
+	return testNames;
+}
+
+export function extractPlaywrightTestNames(content = '') {
+	const testNames = [];
+	const testNamePattern = /\btest(?:\.(?:only|skip|fixme))?\s*\(\s*(['"`])((?:\\.|(?!\1)[\s\S])*?)\1/g;
+	let match;
+
+	while ((match = testNamePattern.exec(content))) {
+		testNames.push(match[2].replace(/\\(['"`])/g, '$1'));
+	}
+
+	return testNames;
+}
+
+export function findMissingRequiredTestNames(content, instructions = {}) {
+	const requiredTestNames = extractRequiredTestNames(instructions.text || '');
+	const generatedTestNames = new Set(extractPlaywrightTestNames(content));
+
+	return requiredTestNames.filter((testName) => !generatedTestNames.has(testName));
+}
+
 function rejectNonJavaScriptOutput(content) {
 	const firstCodeLine = content
 		.split(/\r?\n/)

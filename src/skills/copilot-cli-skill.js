@@ -9,9 +9,14 @@ export async function generatePlaywrightSpecWithCopilot({ appSnapshot, instructi
 	await assertCopilotCliAccess(targetUrl);
 
 	const prompt = buildPrompt({ appSnapshot, instructions, targetUrl });
-	const { stdout } = await runCopilotSuggest(prompt, 'Copilot CLI failed to generate a Playwright test.', targetUrl);
+	logGroup('Copilot prompt for Playwright test generation', prompt);
 
-	return extractCodeBlock(stdout) || stdout;
+	const { stdout } = await runCopilotSuggest(prompt, 'Copilot CLI failed to generate a Playwright test.', targetUrl);
+	logGroup('Copilot raw output for Playwright test generation', stdout);
+
+	const extractedCode = extractCodeBlock(stdout) || stdout;
+	console.log(`Copilot generated content length: ${extractedCode.length} characters`);
+	return extractedCode;
 }
 
 async function assertCopilotCliAccess(targetUrl) {
@@ -103,4 +108,10 @@ ${formatAppSnapshot(appSnapshot)}`;
 function extractCodeBlock(content) {
 	const match = content.match(/```(?:javascript|js)?\s*([\s\S]*?)```/i);
 	return match?.[1]?.trim();
+}
+
+function logGroup(title, content) {
+	console.log(`::group::${title}`);
+	console.log(content);
+	console.log('::endgroup::');
 }

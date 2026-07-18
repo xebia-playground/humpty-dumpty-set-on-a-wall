@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { normalizeGeneratedTest, validateGeneratedTestSyntax } from './test-validator.js';
+import { extractPlaywrightTestNames, extractRequiredTestNames, findMissingRequiredTestNames, normalizeGeneratedTest, validateGeneratedTestSyntax } from './test-validator.js';
 
 const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'test-validator-'));
 
@@ -57,4 +57,41 @@ test('loads page', async ({ page }) => {
 		tempDir: temporaryDirectory,
 		targetUrl: 'http://example.test',
 	});
+});
+
+test('extracts required test names from markdown instructions', () => {
+	assert.deepEqual(extractRequiredTestNames(`## Required Tests
+1. \`loads the game with heading, canvas, and HUD visible\`
+2. \`reaches 400 score through gameplay simulation\``), [
+		'loads the game with heading, canvas, and HUD visible',
+		'reaches 400 score through gameplay simulation',
+	]);
+});
+
+test('extracts generated Playwright test names', () => {
+	assert.deepEqual(extractPlaywrightTestNames(`import { test } from '@playwright/test';
+
+test('loads the game with heading, canvas, and HUD visible', async () => {});
+test("reaches 400 score through gameplay simulation", async () => {});`), [
+		'loads the game with heading, canvas, and HUD visible',
+		'reaches 400 score through gameplay simulation',
+	]);
+});
+
+test('reports missing required test names for workflow debug logs', () => {
+	const instructions = {
+		text: `## Required Tests
+1. \`loads the game with heading, canvas, and HUD visible\`
+2. \`reaches 400 score through gameplay simulation\``,
+	};
+	const normalizedTest = normalizeGeneratedTest(`import { test, expect } from '@playwright/test';
+
+test('loads the game with heading, canvas, and HUD visible', async ({ page }) => {
+	await page.goto(process.env.TARGET_URL);
+	await expect(page).toHaveTitle(/game/i);
+});`);
+
+	assert.deepEqual(findMissingRequiredTestNames(normalizedTest, instructions), [
+		'reaches 400 score through gameplay simulation',
+	]);
 });
