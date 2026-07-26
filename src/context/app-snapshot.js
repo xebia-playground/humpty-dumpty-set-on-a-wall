@@ -56,23 +56,29 @@ export async function createAppSnapshot(page, targetUrl, options = {}) {
 
 	const useAccessibilityTree = options.useAccessibilityTree !== false;
 	if (useAccessibilityTree) {
-		const accessibilityTree = await page.accessibility.snapshot({ interestingOnly: true });
-		const treeSnapshot = createEmptySnapshot();
-		flattenAccessibilityTree(accessibilityTree, treeSnapshot, {
-			maxDepth: options.maxDepth || MAX_TREE_DEPTH,
-			maxItemsPerGroup: MAX_ITEMS_PER_GROUP,
-			maxTextLength: MAX_TEXT_LENGTH,
-		});
+		try {
+			const ariaSnapshot = await page.ariaSnapshot({
+				mode: 'ai',
+				depth: options.maxDepth || MAX_TREE_DEPTH,
+			});
+			const treeSnapshot = createEmptySnapshot();
+			flattenAriaSnapshotText(ariaSnapshot, treeSnapshot, {
+				maxItemsPerGroup: MAX_ITEMS_PER_GROUP,
+				maxTextLength: MAX_TEXT_LENGTH,
+			});
 
-		mergeSnapshotGroup(treeSnapshot, 'canvases', snapshot.canvases);
-		mergeSnapshotGroup(treeSnapshot, 'statusText', snapshot.statusText);
-		mergeSnapshotGroup(treeSnapshot, 'contentHints', snapshot.contentHints);
-		treeSnapshot.title = treeSnapshot.title || snapshot.title;
+			mergeSnapshotGroup(treeSnapshot, 'canvases', snapshot.canvases);
+			mergeSnapshotGroup(treeSnapshot, 'statusText', snapshot.statusText);
+			mergeSnapshotGroup(treeSnapshot, 'contentHints', snapshot.contentHints);
+			treeSnapshot.title = treeSnapshot.title || snapshot.title;
 
-		return {
-			...treeSnapshot,
-			url: page.url() || targetUrl,
-		};
+			return {
+				...treeSnapshot,
+				url: page.url() || targetUrl,
+			};
+		} catch (error) {
+			console.warn(`Accessibility snapshot unavailable for ${page.url() || targetUrl}. Falling back to DOM snapshot. ${error.message}`);
+		}
 	}
 
 	return {
@@ -81,8 +87,8 @@ export async function createAppSnapshot(page, targetUrl, options = {}) {
 	};
 }
 
-function flattenAccessibilityTree(rootNode, snapshot, { maxDepth, maxItemsPerGroup, maxTextLength }) {
-	if (!rootNode) {
+function flattenAriaSnapshotText(ariaSnapshot, snapshot, { maxItemsPerGroup, maxTextLength }) {
+	if (!ariaSnapshot) {
 		return;
 	}
 
@@ -96,17 +102,30 @@ function flattenAccessibilityTree(rootNode, snapshot, { maxDepth, maxItemsPerGro
 		contentHints: new Set(),
 	};
 
-	const visit = (node, depth) => {
-		if (!node || depth > maxDepth) {
-			return;
+	for (const rawLine of String(ariaSnapshot).split('\n')) {
+		const line = rawLine.trim();
+		if (!line) {
+			continue;
 		}
 
-		if (!snapshot.title) {
-			snapshot.title = normalizeText(node.name, maxTextLength);
+		const roleMatch = line.match(/^-\s*([a-zA-Z][\w-]*)\b/);
+		if (!roleMatch) {
+			continue;
 		}
 
-		const role = normalizeRole(node.role);
-		const name = normalizeText(node.name ?? node.value, maxTextLength);
+		const role = normalizeRole(roleMatch[1]);
+		const quotedNameMatch = line.match(/"([^"]+)"/);
+		const bracketMatch = line.match(/\[([^\]]+)\]/g);
+		const bracketText = bracketMatch ? bracketMatch.join(' ').replace(/\[|\]/g, '') : '';
+		const combinedText = [quotedNameMatch?.[1], bracketText]
+			.filter(Boolean)
+			.join(' ');
+		const name = normalizeText(combinedText, maxTextLength);
+
+		if (!snapshot.title && role === 'heading' && name) {
+			snapshot.title = name;
+		}
+
 		const group = ROLE_TO_GROUP[role];
 		if (group && name) {
 			pushUnique(snapshot[group], seenValues[group], name, maxItemsPerGroup);
@@ -115,13 +134,7 @@ function flattenAccessibilityTree(rootNode, snapshot, { maxDepth, maxItemsPerGro
 		if (role && name) {
 			pushUnique(snapshot.contentHints, seenValues.contentHints, `${role}: ${name}`, maxItemsPerGroup);
 		}
-
-		for (const child of node.children || []) {
-			visit(child, depth + 1);
-		}
-	};
-
-	visit(rootNode, 0);
+	}
 }
 
 function mergeSnapshotGroup(snapshot, group, values) {
