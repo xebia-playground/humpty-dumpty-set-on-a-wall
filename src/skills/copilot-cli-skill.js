@@ -79,7 +79,7 @@ async function runCommand(command, args, failureMessage, targetUrl) {
 function buildPrompt({ appSnapshot, instructions, targetUrl }) {
 	const instructionText = instructions.hasCustomInstructions
 		? instructions.text
-		: 'No custom instructions were provided. Generate default ecommerce-style smoke tests from the live page snapshot.';
+		: 'No custom instructions were provided. Generate default smoke tests from the live application snapshots.';
 
 	return `Generate a complete JavaScript Playwright test file for this application.
 
@@ -89,7 +89,7 @@ Requirements:
 - The first non-comment code line must be: import { test, expect } from '@playwright/test'.
 - Include at least one Playwright test(...) block.
 - Use process.env.TARGET_URL as the base URL.
-- Prefer role-based selectors from the observed UI snapshot.
+- Prefer role-based selectors from the observed accessibility snapshot.
 - Do not use fixed waits such as page.waitForTimeout().
 - Do not use external services or real payment gateways.
 - Do not return shell commands, terminal instructions, or Copilot suggestion UI output.
@@ -101,7 +101,8 @@ Target URL: ${targetUrl}
 Testing instructions from ${instructions.path}:
 ${instructionText}
 
-Observed application snapshot from Playwright:
+Observed application snapshots from Playwright:
+If multiple routes are listed, use route-specific UI details when generating tests.
 ${formatAppSnapshot(appSnapshot)}`;
 }
 

@@ -16,7 +16,13 @@ export async function inspectLiveApp(env = process.env) {
 	});
 	logInstructionDebug(instructions);
 
-	const appSnapshot = await inspectApplication({ targetUrl });
+	const appSnapshot = await inspectApplication({
+		targetUrl,
+		snapshotOptions: {
+			useAccessibilityTree: true,
+		},
+	});
+	console.log(`Application routes inspected: ${appSnapshot.routes?.length ?? 1}`);
 	logGroup('Application snapshot captured by Playwright', formatAppSnapshot(appSnapshot));
 
 	await fs.mkdir(path.dirname(snapshotFile), { recursive: true });
@@ -36,6 +42,7 @@ export async function generateTestsFromSnapshot(env = process.env) {
 		workspacePath,
 	});
 	logInstructionDebug(instructions);
+	console.log(`Application routes used for Copilot generation: ${appSnapshot.routes?.length ?? 1}`);
 	logGroup('Application snapshot used for Copilot generation', formatAppSnapshot(appSnapshot));
 
 	const generatedSpec = await generatePlaywrightSpecWithCopilot({
