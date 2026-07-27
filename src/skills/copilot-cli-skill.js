@@ -5,10 +5,10 @@ import { formatAppSnapshot } from '../context/app-snapshot.js';
 
 const execFileAsync = promisify(execFile);
 
-export async function generatePlaywrightSpecWithCopilot({ appSnapshot, instructions, targetUrl }) {
+export async function generatePlaywrightSpecWithCopilot({ appSnapshot, instructions, targetUrl, feedback }) {
 	await assertCopilotCliAccess(targetUrl);
 
-	const prompt = buildPrompt({ appSnapshot, instructions, targetUrl });
+	const prompt = buildPrompt({ appSnapshot, instructions, targetUrl, feedback });
 	logGroup('Copilot prompt for Playwright test generation', prompt);
 
 	const { stdout } = await runCopilotSuggest(prompt, 'Copilot CLI failed to generate a Playwright test.', targetUrl);
@@ -76,10 +76,21 @@ async function runCommand(command, args, failureMessage, targetUrl) {
 	}
 }
 
-function buildPrompt({ appSnapshot, instructions, targetUrl }) {
+function buildPrompt({ appSnapshot, instructions, targetUrl, feedback }) {
 	const instructionText = instructions.hasCustomInstructions
 		? instructions.text
 		: 'No custom instructions were provided. Generate default smoke tests from the live application snapshots.';
+	const feedbackText = feedback
+		? `
+
+Previous generation failed validation.
+Attempt: ${feedback.attempt}
+Error:
+${feedback.errorMessage}
+
+Previous generated code:
+${feedback.generatedSpec}`
+		: '';
 
 	return `Generate a complete JavaScript Playwright test file for this application.
 
@@ -103,7 +114,7 @@ ${instructionText}
 
 Observed application snapshots from Playwright:
 If multiple routes are listed, use route-specific UI details when generating tests.
-${formatAppSnapshot(appSnapshot)}`;
+${formatAppSnapshot(appSnapshot)}${feedbackText}`;
 }
 
 function extractCodeBlock(content) {

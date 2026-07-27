@@ -7,6 +7,8 @@ import { generatePlaywrightSpecWithCopilot } from '../skills/copilot-cli-skill.j
 import { inspectApplication, runGeneratedPlaywrightTest } from '../skills/playwright-cli-skill.js';
 import { extractPlaywrightTestNames, extractRequiredTestNames, findMissingRequiredTestNames, normalizeGeneratedTest, validateGeneratedTestSyntax } from '../validation/test-validator.js';
 
+const MAX_GENERATION_ATTEMPTS = 2;
+
 export async function inspectLiveApp(env = process.env) {
 	const targetUrl = requireEnv(env, 'TARGET_URL');
 	const snapshotFile = requireEnv(env, 'APP_SNAPSHOT_FILE');
@@ -45,19 +47,14 @@ export async function generateTestsFromSnapshot(env = process.env) {
 	console.log(`Application routes used for Copilot generation: ${appSnapshot.routes?.length ?? 1}`);
 	logGroup('Application snapshot used for Copilot generation', formatAppSnapshot(appSnapshot));
 
-	const generatedSpec = await generatePlaywrightSpecWithCopilot({
+	const { normalizedSpec } = await generateAndValidateSpec({
 		appSnapshot,
 		instructions,
 		targetUrl,
+		outputFile,
 	});
-	const normalizedSpec = normalizeGeneratedTest(generatedSpec);
-	logGeneratedTestDebug(normalizedSpec, instructions);
 
 	await fs.mkdir(path.dirname(outputFile), { recursive: true });
-	await validateGeneratedTestSyntax(normalizedSpec, {
-		tempDir: path.dirname(outputFile),
-		targetUrl,
-	});
 	await fs.writeFile(outputFile, normalizedSpec, 'utf8');
 
 	console.log(`Generated Playwright test: ${path.relative(process.cwd(), outputFile)}`);
@@ -115,4 +112,48 @@ function logGroup(title, content) {
 	console.log(`::group::${title}`);
 	console.log(content);
 	console.log('::endgroup::');
+}
+
+async function generateAndValidateSpec({ appSnapshot, instructions, targetUrl, outputFile }) {
+	let lastError;
+	let promptContext = undefined;
+
+	for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt++) {
+		const generatedSpec = await generatePlaywrightSpecWithCopilot({
+			appSnapshot,
+			instructions,
+			targetUrl,
+			feedback: promptContext,
+		});
+		let normalizedSpec;
+
+		try {
+			normalizedSpec = normalizeGeneratedTest(generatedSpec);
+			await validateGeneratedTestSyntax(normalizedSpec, {
+				tempDir: path.dirname(outputFile),
+				targetUrl,
+			});
+			logGeneratedTestDebug(normalizedSpec, instructions);
+			return { normalizedSpec };
+		} catch (error) {
+			lastError = error;
+			const isSyntaxOrGenerationError = isSelfHealEligibleError(error.message);
+			if (!isSyntaxOrGenerationError || attempt === MAX_GENERATION_ATTEMPTS) {
+				throw error;
+			}
+
+			promptContext = {
+				attempt,
+				errorMessage: error.message,
+				generatedSpec,
+			};
+			console.warn(`::warning::Regenerating tests after syntax/API validation failure: ${error.message}`);
+		}
+	}
+
+	throw lastError;
+}
+
+function isSelfHealEligibleError(message = '') {
+	return /invalid|expected raw JavaScript|not valid JavaScript|fixed waits|disallowed module|CommonJS require\(|label: expected string|selector|import/.test(message);
 }
