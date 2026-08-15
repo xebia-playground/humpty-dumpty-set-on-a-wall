@@ -9,7 +9,7 @@ import { extractPlaywrightTestNames, extractRequiredTestNames, findMissingRequir
 import { createAppSnapshot } from '../context/app-snapshot.js';
 import { executePlaywrightAction } from '../skills/playwright-cli-skill.js';
 
-const MAX_GENERATION_ATTEMPTS = 2;
+const MAX_GENERATION_ATTEMPTS = 3;
 
 export async function inspectLiveApp(env = process.env) {
 	const targetUrl = requireEnv(env, 'TARGET_URL');
@@ -57,6 +57,11 @@ export async function generateTestsFromSnapshot(env = process.env) {
 		instructions,
 		targetUrl,
 		outputFile,
+		runtimeCheck: {
+			configPath: env.PLAYWRIGHT_CONFIG_PATH,
+			outputDir: env.PLAYWRIGHT_OUTPUT_DIR,
+			project: env.PLAYWRIGHT_PROJECT || 'chromium',
+		},
 	});
 
 	await fs.writeFile(outputFile, normalizedSpec, 'utf8');
@@ -118,7 +123,7 @@ function logGroup(title, content) {
 	console.log('::endgroup::');
 }
 
-async function generateAndValidateSpec({ appSnapshot, instructions, targetUrl, outputFile }) {
+async function generateAndValidateSpec({ appSnapshot, instructions, targetUrl, outputFile, runtimeCheck }) {
 	let lastError;
 	let promptContext = undefined;
 
@@ -137,12 +142,13 @@ async function generateAndValidateSpec({ appSnapshot, instructions, targetUrl, o
 				tempDir: path.dirname(outputFile),
 				targetUrl,
 			});
+			await runRuntimeSelfCheck(normalizedSpec, { outputFile, targetUrl, ...runtimeCheck });
 			logGeneratedTestDebug(normalizedSpec, instructions);
 			return { normalizedSpec };
 		} catch (error) {
 			lastError = error;
-			const isSyntaxOrGenerationError = isSelfHealEligibleError(error.message);
-			if (!isSyntaxOrGenerationError || attempt === MAX_GENERATION_ATTEMPTS) {
+			const isEligibleForRetry = error.isRuntimeFailure || isSelfHealEligibleError(error.message);
+			if (!isEligibleForRetry || attempt === MAX_GENERATION_ATTEMPTS) {
 				throw error;
 			}
 
@@ -158,8 +164,35 @@ async function generateAndValidateSpec({ appSnapshot, instructions, targetUrl, o
 	throw lastError;
 }
 
+// Executes the generated spec against the real target so runtime failures (bad locators, missing UI) feed back into self-heal, not just syntax errors
+async function runRuntimeSelfCheck(normalizedSpec, { outputFile, targetUrl, configPath, outputDir, project = 'chromium' } = {}) {
+	if (!configPath || !outputDir) {
+		console.warn('::warning::Skipping runtime self-check: PLAYWRIGHT_CONFIG_PATH or PLAYWRIGHT_OUTPUT_DIR is not set.');
+		return;
+	}
+
+	await fs.writeFile(outputFile, normalizedSpec, 'utf8');
+
+	try {
+		await runGeneratedPlaywrightTest({ configPath, generatedTestFile: outputFile, outputDir, project, targetUrl });
+	} catch (error) {
+		if (isNetworkUnreachableError(error.message)) {
+			console.warn(`::warning::Skipping runtime self-check because the target app was unreachable from the generate step: ${error.message}`);
+			return;
+		}
+		const runtimeError = new Error(`Generated test failed during runtime self-check. ${error.message}`);
+		// any runtime test failure is retryable, regardless of which error text it produced
+		runtimeError.isRuntimeFailure = true;
+		throw runtimeError;
+	}
+}
+
+function isNetworkUnreachableError(message = '') {
+	return /ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|getaddrinfo|net::ERR_NAME_NOT_RESOLVED|net::ERR_CONNECTION_REFUSED/.test(message);
+}
+
 function isSelfHealEligibleError(message = '') {
-	return /invalid|expected raw JavaScript|not valid JavaScript|fixed waits|disallowed module|CommonJS require\(|label: expected string|selector|import/.test(message);
+	return /invalid|expected raw JavaScript|not valid JavaScript|fixed waits|disallowed module|CommonJS require\(|label: expected string|selector|import|toHaveCount|toBeVisible|strict mode violation|Unexpected token/.test(message);
 }
 
 async function waitForReactStability(page, previousUrl) {
