@@ -49,8 +49,8 @@ async function runCopilotSuggest(prompt, failureMessage, targetUrl) {
 
 function createCopilotSuggestArgs(prompt) {
 	return [
-		['copilot', '--prompt', `suggest ${prompt}`, '--agent', 'shell'],
-		['copilot', '-p', `suggest ${prompt}`, '--agent', 'shell'],
+		['copilot', '--prompt', `suggest ${prompt} --agent shell`], // revert
+		['copilot', '-p', `suggest ${prompt} --agent shell`], // revert
 		['copilot', 'suggest', prompt, '--agent', 'shell'],
 		['copilot', 'suggest', prompt, '--target', 'shell'],
 	];
