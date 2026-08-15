@@ -49,6 +49,9 @@ export async function generateTestsFromSnapshot(env = process.env) {
 	console.log(`Application routes used for Copilot generation: ${appSnapshot.routes?.length ?? 1}`);
 	logGroup('Application snapshot used for Copilot generation', formatAppSnapshot(appSnapshot));
 
+	// syntax-check temp file needs this directory to exist before validation runs
+	await fs.mkdir(path.dirname(outputFile), { recursive: true });
+
 	const { normalizedSpec } = await generateAndValidateSpec({
 		appSnapshot,
 		instructions,
@@ -56,7 +59,6 @@ export async function generateTestsFromSnapshot(env = process.env) {
 		outputFile,
 	});
 
-	await fs.mkdir(path.dirname(outputFile), { recursive: true });
 	await fs.writeFile(outputFile, normalizedSpec, 'utf8');
 
 	console.log(`Generated Playwright test: ${path.relative(process.cwd(), outputFile)}`);
