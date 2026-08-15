@@ -6,6 +6,8 @@ import { loadTestingInstructions } from '../context/instruction-loader.js';
 import { generatePlaywrightSpecWithCopilot } from '../skills/copilot-cli-skill.js';
 import { inspectApplication, runGeneratedPlaywrightTest } from '../skills/playwright-cli-skill.js';
 import { extractPlaywrightTestNames, extractRequiredTestNames, findMissingRequiredTestNames, normalizeGeneratedTest, validateGeneratedTestSyntax } from '../validation/test-validator.js';
+import { createAppSnapshot } from '../context/app-snapshot.js';
+import { executePlaywrightAction } from '../skills/playwright-cli-skill.js';
 
 const MAX_GENERATION_ATTEMPTS = 2;
 
@@ -156,4 +158,145 @@ async function generateAndValidateSpec({ appSnapshot, instructions, targetUrl, o
 
 function isSelfHealEligibleError(message = '') {
 	return /invalid|expected raw JavaScript|not valid JavaScript|fixed waits|disallowed module|CommonJS require\(|label: expected string|selector|import/.test(message);
+}
+
+async function waitForReactStability(page, previousUrl) {
+  const timeoutMs = 1200;
+
+  try {
+    await page.waitForLoadState('networkidle', { timeout: timeoutMs }).catch(() => {});
+  } catch (error) {
+    // Ignore load-state failures; some SPA routes never fire a full page load
+  }
+
+  try {
+    if (previousUrl) {
+      await page.waitForURL((url) => url.toString() !== previousUrl, { timeout: 3000 }).catch(() => {});
+    }
+  } catch (error) {
+    // ignore; route may not change
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 700));
+}
+
+function isSnapshotDifferent(a, b) {
+  if (!a || !b) return true;
+  if (!a.nodes || !b.nodes) return true;
+
+  const aKey = a.nodes.map((n) => `${n.role}:${n.name}:${n.path}`).join('|');
+  const bKey = b.nodes.map((n) => `${n.role}:${n.name}:${n.path}`).join('|');
+
+  return aKey !== bKey;
+}
+
+export async function runMicroStepLoop({
+  page,
+  instruction,
+  planner,
+  validator,
+  maxSteps = 25,
+  waitOptions = {},
+}) {
+  let previousSnapshot = null;
+  let previousUrl = page.url();
+  let lastAction = null;
+
+  for (let step = 0; step < maxSteps; step += 1) {
+    const snapshot = await createAppSnapshot(page, previousUrl, { includeA11yTree: true });
+
+    const plan =
+      typeof planner === 'function'
+        ? await planner({
+            instruction,
+            snapshot,
+            previousSnapshot,
+            pageUrl: page.url(),
+            step,
+          })
+        : null;
+
+    if (!plan) {
+      return {
+        completed: false,
+        reason: 'No planner decision returned',
+        lastSnapshot: snapshot,
+      };
+    }
+
+    lastAction = plan;
+
+    await executePlaywrightAction(page, plan);
+
+    const beforeRouteUrl = page.url();
+    await waitForReactStability(page, previousUrl);
+
+    const nextSnapshot = await createAppSnapshot(page, page.url(), { includeA11yTree: true });
+
+    const validation =
+      typeof validator === 'function'
+        ? await validator({
+            instruction,
+            previousSnapshot: snapshot,
+            currentSnapshot: nextSnapshot,
+            action: plan,
+            previousUrl,
+            currentUrl: page.url(),
+          })
+        : {
+            passed: true,
+            completed: true,
+          };
+
+    previousSnapshot = nextSnapshot;
+    previousUrl = page.url();
+
+    if (validation?.completed || validation?.passed) {
+      return {
+        completed: Boolean(validation.completed || validation.passed),
+        step,
+        action: plan,
+        snapshot: nextSnapshot,
+      };
+    }
+
+    if (validation?.retryable === false) {
+      return {
+        completed: false,
+        failed: true,
+        step,
+        action: plan,
+        snapshot: nextSnapshot,
+        reason: validation.reason || 'Action validation failed',
+      };
+    }
+  }
+
+  return {
+    completed: false,
+    step: maxSteps,
+    action: lastAction,
+    snapshot: previousSnapshot,
+    reason: 'Max steps exceeded',
+  };
+}
+
+export async function observePlanActValidate({
+  page,
+  instruction,
+  planner,
+  validator,
+  maxSteps = 25,
+}) {
+  return runMicroStepLoop({
+    page,
+    instruction,
+    planner,
+    validator,
+    maxSteps,
+    waitOptions: {
+      networkIdleTimeout: 1500,
+      settleDelayMs: 700,
+    },
+  });
 }

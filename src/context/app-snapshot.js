@@ -1,6 +1,7 @@
 const MAX_ITEMS_PER_GROUP = 20;
 const MAX_TEXT_LENGTH = 120;
 const MAX_TREE_DEPTH = 6;
+const MAX_VISIBLE_NODES = 200;
 
 const SNAPSHOT_GROUPS = [
 	'headings',
@@ -24,70 +25,63 @@ const ROLE_TO_GROUP = {
 	alert: 'statusText',
 };
 
+const INTERACTIVE_TAGS = new Set([
+	'button',
+	'a',
+	'input',
+	'textarea',
+	'select',
+	'option',
+	'label',
+	'summary',
+	'details',
+]);
+
+const ROLE_ALIASES = {
+	button: 'button',
+	link: 'link',
+	textbox: 'textbox',
+	searchbox: 'textbox',
+	combobox: 'combobox',
+	checkbox: 'checkbox',
+	radio: 'radio',
+	slider: 'slider',
+	tab: 'tab',
+	status: 'status',
+	alert: 'alert',
+};
+
 export async function createAppSnapshot(page, targetUrl, options = {}) {
-	const snapshot = await page.evaluate(({ maxItemsPerGroup, maxTextLength }) => {
-		const cleanText = (value) => (value || '').replace(/\s+/g, ' ').trim().slice(0, maxTextLength);
-		const isVisible = (element) => {
-			const style = window.getComputedStyle(element);
-			const rect = element.getBoundingClientRect();
-			return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
-		};
-		const collect = (selector, mapper) => Array.from(document.querySelectorAll(selector))
-			.filter(isVisible)
-			.map(mapper)
-			.map(cleanText)
-			.filter(Boolean)
-			.slice(0, maxItemsPerGroup);
+	const domSnapshot = await page.evaluate(() => {
+		const nodes = collectVisibleNodes();
 
 		return {
-			title: cleanText(document.title),
-			headings: collect('h1,h2,h3,h4,h5,h6,[role="heading"]', (element) => element.textContent),
-			buttons: collect('button,[role="button"],input[type="button"],input[type="submit"]', (element) => element.innerText || element.value || element.getAttribute('aria-label')),
-			links: collect('a[href],[role="link"]', (element) => element.innerText || element.getAttribute('aria-label') || element.getAttribute('href')),
-			textboxes: collect('input:not([type]),input[type="text"],input[type="search"],input[type="email"],input[type="password"],textarea,[role="textbox"]', (element) => element.getAttribute('aria-label') || element.getAttribute('placeholder') || element.name || element.id),
-			canvases: collect('canvas,[role="img"],[aria-label*="canvas" i],[aria-label*="game" i]', (element) => element.getAttribute('aria-label') || element.textContent || element.id),
-			statusText: collect('[role="status"],[aria-live],[data-testid*="score" i],[data-testid*="hud" i],[class*="score" i],[class*="hud" i]', (element) => element.textContent || element.getAttribute('aria-label')),
-			contentHints: collect('[data-testid],[aria-label]', (element) => element.textContent || element.getAttribute('aria-label') || element.getAttribute('data-testid')),
+			title: document.title || '',
+			url: window.location.href,
+			pathname: window.location.pathname,
+			route: window.location.pathname + window.location.search,
+			nodes,
+			visibleNodeCount: nodes.length,
 		};
-	}, {
-		maxItemsPerGroup: MAX_ITEMS_PER_GROUP,
-		maxTextLength: MAX_TEXT_LENGTH,
 	});
 
-	const useAccessibilityTree = options.useAccessibilityTree !== false;
-	if (useAccessibilityTree) {
+	let a11yTree = null;
+	if (options.includeA11yTree !== false) {
 		try {
-			const ariaSnapshot = await page.ariaSnapshot({
-				mode: 'ai',
-				depth: options.maxDepth || MAX_TREE_DEPTH,
-			});
-			const treeSnapshot = createEmptySnapshot();
-			flattenAriaSnapshotText(ariaSnapshot, treeSnapshot, {
-				maxItemsPerGroup: MAX_ITEMS_PER_GROUP,
-				maxTextLength: MAX_TEXT_LENGTH,
-			});
-
-			mergeSnapshotGroup(treeSnapshot, 'canvases', snapshot.canvases);
-			mergeSnapshotGroup(treeSnapshot, 'statusText', snapshot.statusText);
-			mergeSnapshotGroup(treeSnapshot, 'contentHints', snapshot.contentHints);
-			treeSnapshot.title = treeSnapshot.title || snapshot.title;
-
-			return {
-				...treeSnapshot,
-				url: page.url() || targetUrl,
-			};
+			a11yTree = await page.accessibility.snapshot({ interestingOnly: true });
 		} catch (error) {
-			console.warn(`Accessibility snapshot unavailable for ${page.url() || targetUrl}. Falling back to DOM snapshot. ${error.message}`);
+			a11yTree = null;
 		}
 	}
 
 	return {
-		...snapshot,
-		url: page.url() || targetUrl,
+		...domSnapshot,
+		a11yTree,
+		url: domSnapshot.url || targetUrl || page.url(),
 	};
 }
 
-function flattenAriaSnapshotText(ariaSnapshot, snapshot, { maxItemsPerGroup, maxTextLength }) {
+function flattenAriaSnapshotText(ariaSnapshot, snapshot) {
 	if (!ariaSnapshot) {
 		return;
 	}
@@ -128,11 +122,11 @@ function flattenAriaSnapshotText(ariaSnapshot, snapshot, { maxItemsPerGroup, max
 
 		const group = ROLE_TO_GROUP[role];
 		if (group && name) {
-			pushUnique(snapshot[group], seenValues[group], name, maxItemsPerGroup);
+			pushUnique(snapshot[group], seenValues[group], name);
 		}
 
 		if (role && name) {
-			pushUnique(snapshot.contentHints, seenValues.contentHints, `${role}: ${name}`, maxItemsPerGroup);
+			pushUnique(snapshot.contentHints, seenValues.contentHints, `${role}: ${name}`);
 		}
 	}
 }
@@ -140,15 +134,15 @@ function flattenAriaSnapshotText(ariaSnapshot, snapshot, { maxItemsPerGroup, max
 function mergeSnapshotGroup(snapshot, group, values) {
 	const seen = new Set(snapshot[group]);
 	for (const value of values || []) {
-		if (!seen.has(value) && snapshot[group].length < MAX_ITEMS_PER_GROUP) {
+		if (!seen.has(value)) {
 			snapshot[group].push(value);
 			seen.add(value);
 		}
 	}
 }
 
-function pushUnique(values, seenSet, value, maxItemsPerGroup) {
-	if (!value || seenSet.has(value) || values.length >= maxItemsPerGroup) {
+function pushUnique(values, seenSet, value) {
+	if (!value || seenSet.has(value)) {
 		return;
 	}
 
@@ -160,71 +154,204 @@ function normalizeRole(value) {
 	return String(value || '').toLowerCase().trim();
 }
 
-function normalizeText(value, maxTextLength = MAX_TEXT_LENGTH) {
-	return String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxTextLength);
+function normalizeText(value, maxLength = MAX_TEXT_LENGTH) {
+	if (value == null) return '';
+	return String(value)
+		.replace(/\s+/g, ' ')
+		.trim()
+		.slice(0, maxLength);
 }
 
-function createEmptySnapshot() {
+function isVisible(el) {
+	if (!el || typeof el.getBoundingClientRect !== 'function') return false;
+
+	const style = window.getComputedStyle(el);
+	const rect = el.getBoundingClientRect();
+
+	return (
+		style.visibility !== 'hidden' &&
+		style.display !== 'none' &&
+		style.opacity !== '0' &&
+		rect.width > 0 &&
+		rect.height > 0
+	);
+}
+
+function getTextContent(el) {
+	return (
+		el.innerText ||
+		el.textContent ||
+		el.getAttribute('aria-label') ||
+		el.getAttribute('title') ||
+		el.value ||
+		''
+	);
+}
+
+function getAccessibleName(el) {
+	const ariaLabel = el.getAttribute('aria-label');
+	if (ariaLabel) return normalizeText(ariaLabel);
+
+	const labelledBy = el.getAttribute('aria-labelledby');
+	if (labelledBy) {
+		const ids = labelledBy.split(/\s+/).filter(Boolean);
+		const text = ids
+			.map((id) => document.getElementById(id))
+			.filter(Boolean)
+			.map((node) => getTextContent(node))
+			.join(' ');
+
+		if (text) return normalizeText(text);
+	}
+
+	if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+		const value = el.value;
+		if (value) return normalizeText(value);
+	}
+
+	const placeholder = el.getAttribute('placeholder');
+	if (placeholder) return normalizeText(placeholder);
+
+	const alt = el.getAttribute('alt');
+	if (alt) return normalizeText(alt);
+
+	const text = normalizeText(getTextContent(el));
+	if (text) return text;
+
+	return '';
+}
+
+function inferRole(el) {
+	const explicitRole = (el.getAttribute('role') || '').toLowerCase();
+	if (explicitRole) return ROLE_ALIASES[explicitRole] || explicitRole;
+
+	const tag = (el.tagName || '').toLowerCase();
+
+	if (tag === 'button') return 'button';
+	if (tag === 'a' && el.hasAttribute('href')) return 'link';
+	if (tag === 'input') {
+		const type = (el.type || 'text').toLowerCase();
+		if (type === 'submit' || type === 'button' || type === 'reset') return 'button';
+		if (type === 'checkbox') return 'checkbox';
+		if (type === 'radio') return 'radio';
+		if (type === 'search') return 'textbox';
+		return 'textbox';
+	}
+	if (tag === 'textarea') return 'textbox';
+	if (tag === 'select') return 'combobox';
+	if (tag === 'img') return 'img';
+	if (tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'h5' || tag === 'h6') {
+		return 'heading';
+	}
+
+	return '';
+}
+
+function getDepth(el) {
+	let depth = 0;
+	let current = el;
+	while (current && current.parentElement) {
+		depth += 1;
+		current = current.parentElement;
+	}
+	return depth;
+}
+
+function getDomPath(el) {
+	const path = [];
+	let current = el;
+
+	while (current && current.parentElement) {
+		const parent = current.parentElement;
+		const siblings = Array.from(parent.children).filter((child) => child.tagName === current.tagName);
+		const index = siblings.indexOf(current) + 1;
+		const tag = current.tagName.toLowerCase();
+		path.unshift(`${tag}:${index}`);
+		current = parent;
+	}
+
+	return path.join(' > ') || 'root';
+}
+
+function buildNode(el) {
+	const role = inferRole(el);
+	const name = getAccessibleName(el);
+	const text = normalizeText(getTextContent(el));
+	const rect = el.getBoundingClientRect();
+	const tagName = (el.tagName || '').toLowerCase();
+
+	const isInteractive =
+		role ||
+		INTERACTIVE_TAGS.has(tagName) ||
+		el.matches('button, a[href], input, textarea, select, [role], [aria-label]');
+
+	if (!isInteractive) return null;
+
 	return {
-		title: '',
-		headings: [],
-		buttons: [],
-		links: [],
-		textboxes: [],
-		canvases: [],
-		statusText: [],
-		contentHints: [],
+		tagName,
+		role,
+		name,
+		text,
+		id: el.id || '',
+		type: el.getAttribute('type') || '',
+		placeholder: el.getAttribute('placeholder') || '',
+		href: el.getAttribute('href') || '',
+		value: el.value || '',
+		rect: {
+			x: Math.round(rect.x),
+			y: Math.round(rect.y),
+			width: Math.round(rect.width),
+			height: Math.round(rect.height),
+		},
+		path: getDomPath(el),
+		depth: getDepth(el),
+		parentTag: el.parentElement ? el.parentElement.tagName.toLowerCase() : '',
+		parentRole: el.parentElement ? inferRole(el.parentElement) : '',
 	};
 }
 
-export function formatAppSnapshot(snapshot) {
-	if (Array.isArray(snapshot.routes)) {
-		return [
-			`Base URL: ${snapshot.url}`,
-			`Routes inspected: ${snapshot.routes.length}`,
-			'',
-			...snapshot.routes.map(formatSingleAppSnapshot),
-		].join('\n\n---\n\n');
-	}
+function collectVisibleNodes() {
+	const nodes = [];
+	const seen = new Set();
 
-	return formatSingleAppSnapshot(snapshot);
+	Array.from(document.querySelectorAll('*')).forEach((el) => {
+		if (!isVisible(el)) return;
+
+		const node = buildNode(el);
+		if (!node) return;
+
+		const key = `${node.tagName}:${node.role}:${node.name}:${node.path}`;
+		if (seen.has(key)) return;
+
+		seen.add(key);
+		nodes.push(node);
+	});
+
+	return nodes
+		.sort((a, b) => (a.rect.y + a.rect.x) - (b.rect.y + b.rect.x))
+		.slice(0, MAX_VISIBLE_NODES);
 }
 
-function formatSingleAppSnapshot(snapshot) {
+export function formatAppSnapshot(snapshot) {
 	const lines = [
-		`Route: ${getRoutePath(snapshot.url)}`,
-		`URL: ${snapshot.url}`,
 		`Title: ${snapshot.title || 'Not detected'}`,
+		`URL: ${snapshot.url || 'Unknown'}`,
+		`Route: ${snapshot.route || snapshot.pathname || 'Unknown'}`,
+		'',
+		'Visible interactive nodes:',
 	];
 
-	appendGroup(lines, 'Headings', snapshot.headings);
-	appendGroup(lines, 'Buttons', snapshot.buttons);
-	appendGroup(lines, 'Links', snapshot.links);
-	appendGroup(lines, 'Textboxes', snapshot.textboxes);
-	appendGroup(lines, 'Canvases', snapshot.canvases);
-	appendGroup(lines, 'Status text', snapshot.statusText);
-	appendGroup(lines, 'Content hints', snapshot.contentHints);
+	if (!snapshot.nodes || snapshot.nodes.length === 0) {
+		lines.push('- No visible interactive nodes detected');
+		return lines.join('\n');
+	}
+
+	for (const node of snapshot.nodes) {
+		const label = node.name || node.text || node.placeholder || node.id || '(unnamed)';
+		lines.push(
+			`- [${node.role || node.tagName}] ${label} | rect=${node.rect.x},${node.rect.y} size=${node.rect.width}x${node.rect.height} | path=${node.path}`
+		);
+	}
 
 	return lines.join('\n');
-}
-
-function getRoutePath(url) {
-	try {
-		const parsedUrl = new URL(url);
-		return `${parsedUrl.pathname}${parsedUrl.search}` || '/';
-	} catch {
-		return url || 'Unknown';
-	}
-}
-
-function appendGroup(lines, label, values = []) {
-	lines.push(`${label}:`);
-	if (values.length === 0) {
-		lines.push('- None detected');
-		return;
-	}
-
-	for (const value of values) {
-		lines.push(`- ${value}`);
-	}
 }
