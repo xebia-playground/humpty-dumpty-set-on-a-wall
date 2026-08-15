@@ -29,7 +29,7 @@ export async function inspectApplication({ targetUrl, snapshotOptions = {} }) {
 			await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => undefined);
 
 			const snapshot = await createAppSnapshot(page, currentUrl, snapshotOptions);
-			console.debug(`Captured snapshot for route: ${currentUrl} with ${snapshot.visibleNodeCount} visible nodes.`);
+			console.debug(`Captured snapshot for route: ${currentUrl} with ${snapshot.links.length} links and ${snapshot.forms.length} forms.`);
 			routeSnapshots.push(snapshot);
 
 			for (const linkedUrl of await collectInternalLinks(page, origin)) {
