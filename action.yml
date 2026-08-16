@@ -234,7 +234,7 @@ runs:
         --env PLAYWRIGHT_OUTPUT_DIR="$PLAYWRIGHT_OUTPUT_DIR" \
         --env PLAYWRIGHT_HTML_REPORT_DIR="$PLAYWRIGHT_HTML_REPORT_DIR" \
         "$PLAYWRIGHT_CONTAINER_IMAGE" \
-        node "$ACTION_PATH/src/agent/index.js" generate
+        bash -c 'which gh && gh --version && gh extension list 2>&1 && gh auth status 2>&1 && echo "=== copilot test ===" && gh copilot suggest "echo test" --agent shell 2>&1 | head -50 || true; node "$ACTION_PATH/src/agent/index.js" generate'
     env:
       GH_TOKEN: ${{ inputs.github-token || github.token }}
       TARGET_URL: ${{ inputs.target-url }}
