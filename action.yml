@@ -219,10 +219,11 @@ runs:
         --volume "${RUNNER_TEMP:-${TMPDIR:-/tmp}}:${RUNNER_TEMP:-${TMPDIR:-/tmp}}" \
         --volume "$gh_bin:/usr/local/bin/gh:ro" \
         --volume "$gh_extensions_dir:/root/.local/share/gh/extensions:ro" \
-        --volume "$gh_config_dir:/root/.config/gh:ro" \
+        --volume "$gh_config_dir:/root/.config/gh" \
         "${https_proxy_args[@]}" \
         --env GH_TOKEN="$GH_TOKEN" \
         --env GH_PROMPT_DISABLED=1 \
+        --env GH_DEBUG=1 \
         --env TARGET_URL="$TARGET_URL" \
         --env TESTING_INSTRUCTIONS_PATH="$TESTING_INSTRUCTIONS_PATH" \
         --env TARGET_WORKSPACE="$GITHUB_WORKSPACE" \
